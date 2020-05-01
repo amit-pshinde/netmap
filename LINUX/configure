@@ -113,7 +113,7 @@ subsys enable ptnetmap
 
 # available drivers
 driver_avail="r8169.c virtio_net.c forcedeth.c veth.c \
-	e1000 e1000e igb ixgbe ixgbevf i40e vmxnet3 mlx5"
+	e1000 e1000e igb ixgbe ixgbevf i40e vmxnet3 mlx5 ena"
 # enabled drivers (bitfield)
 driver=
 drv()
@@ -137,6 +137,7 @@ edrv enable ixgbevf
 edrv enable i40e
 edrv enable mlx5
 edrv enable virtio_net.c
+edrv enable ena
 
 # drivers built by patching the system drivers
 setop internal_driver new driver
@@ -2194,7 +2195,15 @@ EOF
 EOF
 
   fi # virtio-net
-  
+
+  # amazon ena driver.
+  if drv enabled ena; then
+	add_file_exists_check ena/ena/ena_netdev.c true "drv_source_error ena_netdev.c"
+	add_file_exists_check ena/ena/ena_netdev.h true "drv_source_error ena_netdev.h"
+	# TODO : add_test code to test that required ena files are there. currently we only
+	# check if file is present
+  fi
+
   if drv enabled i40e; then
     add_test 'define I40E_PTR_ARRAY' <<EOF
   	#include "i40e/i40e.h"

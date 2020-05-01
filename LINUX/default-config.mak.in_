@@ -121,3 +121,18 @@ virtio_net.c@force	:= 1
 endef
 
 $(foreach d,$(filter virtio_net.c,$(E_DRIVERS)),$(eval $(call virtio_net)))
+
+# amazon ena drivers.
+define ena
+ena@fetch	:= test -d @SRCDIR@/ext-drivers/amzn-drivers || git clone git@github.com:amit-pshinde/amzn-drivers.git @SRCDIR@/ext-drivers/amzn-drivers
+ena@src		:= mkdir -p ena && cp -rf @SRCDIR@/ext-drivers/amzn-drivers/kernel/linux/* ena/
+ena@patch	:= none
+ena@prepare	:=
+ena@build 	:= make -C ena/ena CFLAGS_EXTRA="$(EXTRA_CFLAGS)" @KOPTS@ NETMAP_DRIVER_SUFFIX=@DRVSUFFIX@ KSRC=@KSRC@
+ena@install 	:= make -C ena/ena install INSTALL_MOD_PATH=@MODPATH@ CFLAGS_EXTRA="$(EXTRA_CFLAGS)" NETMAP_DRIVER_SUFFIX=@DRVSUFFIX@ KSRC=@KSRC@
+ena@clean 	:= if [ -d ena/ena ]; then make -C ena/ena clean CFLAGS_EXTRA="$(EXTRA_CFLAGS)" NETMAP_DRIVER_SUFFIX=@DRVSUFFIX@ KSRC=@KSRC@; fi
+ena@distclean	:= rm -rf ena
+ena@force	:= 1
+endef
+
+$(foreach d,$(filter ena,$(E_DRIVERS)),$(eval $(call ena)))
