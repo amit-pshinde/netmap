@@ -124,15 +124,17 @@ $(foreach d,$(filter virtio_net.c,$(E_DRIVERS)),$(eval $(call virtio_net)))
 
 # amazon ena drivers.
 define ena
-ena@fetch	:= test -d @SRCDIR@/ext-drivers/amzn-drivers || git clone git@github.com:amit-pshinde/amzn-drivers.git @SRCDIR@/ext-drivers/amzn-drivers
-ena@src		:= mkdir -p ena && cp -rf @SRCDIR@/ext-drivers/amzn-drivers/kernel/linux/* ena/
+ena@fetch	:= test -d @SRCDIR@/ext-drivers/$(1)_linux_$(2).tar.gz || wget https://github.com/amit-pshinde/amzn-drivers/archive/$(1)_linux_$(2).tar.gz -P @SRCDIR@/ext-drivers/
+ena@src		:= tar xf @SRCDIR@/ext-drivers/$(1)_linux_$(2).tar.gz && ln -s amzn-drivers-$(1)_linux_$(2)/kernel/linux/$(1) $(1)
 ena@patch	:= none
 ena@prepare	:=
-ena@build 	:= make -C ena/ena CFLAGS_EXTRA="$(EXTRA_CFLAGS)" @KOPTS@ NETMAP_DRIVER_SUFFIX=@DRVSUFFIX@ KSRC=@KSRC@
-ena@install 	:= make -C ena/ena install INSTALL_MOD_PATH=@MODPATH@ CFLAGS_EXTRA="$(EXTRA_CFLAGS)" NETMAP_DRIVER_SUFFIX=@DRVSUFFIX@ KSRC=@KSRC@
-ena@clean 	:= if [ -d ena/ena ]; then make -C ena/ena clean CFLAGS_EXTRA="$(EXTRA_CFLAGS)" NETMAP_DRIVER_SUFFIX=@DRVSUFFIX@ KSRC=@KSRC@; fi
-ena@distclean	:= rm -rf ena
+ena@build 	:= make -C $(1) CFLAGS_EXTRA="$(EXTRA_CFLAGS)" @KOPTS@ NETMAP_DRIVER_SUFFIX=@DRVSUFFIX@ KSRC=@KSRC@
+ena@install 	:= make -C $(1) install INSTALL_MOD_PATH=@MODPATH@ CFLAGS_EXTRA="$(EXTRA_CFLAGS)" NETMAP_DRIVER_SUFFIX=@DRVSUFFIX@ KSRC=@KSRC@
+ena@clean 	:= if [ -d $(1) ]; then make -C $(1) clean CFLAGS_EXTRA="$(EXTRA_CFLAGS)" NETMAP_DRIVER_SUFFIX=@DRVSUFFIX@ KSRC=@KSRC@; fi
+ena@distclean	:= rm -rf $(1)_linux_$(2).tar.gz* amzn-drivers-$(1)_linux_$(2) $(1) @SRCDIR@/ext-drivers/$(1)_linux_$(2).tar.gz*
 ena@force	:= 1
 endef
 
-$(foreach d,$(filter ena,$(E_DRIVERS)),$(eval $(call ena)))
+$(eval $(call default,ena,2.2.7))
+
+$(foreach d,$(filter ena,$(E_DRIVERS)),$(eval $(call ena,$d,$($(d)@v))))

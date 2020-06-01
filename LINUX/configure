@@ -570,7 +570,7 @@ configh=netmap_linux_config.h
 define() {
 	cat >> $configh <<EOF
 
-		#define NETMAP_LINUX_$1 $2
+#define NETMAP_LINUX_$1 $2
 EOF
 }
 
@@ -2198,8 +2198,8 @@ EOF
 
   # amazon ena driver.
   if drv enabled ena; then
-	add_file_exists_check ena/ena/ena_netdev.c true "drv_source_error ena_netdev.c"
-	add_file_exists_check ena/ena/ena_netdev.h true "drv_source_error ena_netdev.h"
+	add_file_exists_check amzn-drivers-ena_linux_2.2.7/kernel/linux/ena/ena_netdev.c true "drv_source_error ena_netdev.c"
+	add_file_exists_check amzn-drivers-ena_linux_2.2.7/kernel/linux/ena/ena_netdev.h true "drv_source_error ena_netdev.h"
 	# TODO : add_test code to test that required ena files are there. currently we only
 	# check if file is present
   fi
@@ -2252,8 +2252,8 @@ EOF
   
   rm -f $configh
   cat > $configh <<EOF
-  	#ifndef NETMAP_LINUX_CONFIG_H
-  	#define NETMAP_LINUX_CONFIG_H
+#ifndef NETMAP_LINUX_CONFIG_H
+#define NETMAP_LINUX_CONFIG_H
 EOF
   
   # the TESTPOSTPROC script will add macros to $configh
@@ -2293,7 +2293,7 @@ EOF
   # file end
   cat >> $configh <<EOF
   
-  	#endif
+#endif
 EOF
   
   if [ -d "$cache" ]; then
