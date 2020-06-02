@@ -12,14 +12,14 @@ index b74e81a..10d4702 100644
  
  
 diff --git a/ena/ena_netdev.c b/ena/ena_netdev.c
-index 561842a..b2804d2 100644
+index 561842a..b608166 100644
 --- a/ena/ena_netdev.c
 +++ b/ena/ena_netdev.c
 @@ -56,6 +56,13 @@
  #include "ena_pci_id_tbl.h"
  #include "ena_sysfs.h"
  
-+#ifdef CONFIG_NETMAP
++#if IS_ENABLED(CONFIG_NETMAP)
 +// glue to include netmap driver specific header file. since the netmap driver was originally
 +// implemented for freebsd you need bsd_glue.h to to included in any file that call's netmap
 +// specific code.
@@ -29,3 +29,133 @@ index 561842a..b2804d2 100644
  static char version[] = DEVICE_NAME " v" DRV_MODULE_GENERATION "\n";
  
  MODULE_AUTHOR("Amazon.com, Inc. or its affiliates");
+@@ -94,8 +101,6 @@ MODULE_DEVICE_TABLE(pci, ena_pci_tbl);
+ 
+ static int ena_rss_init_default(struct ena_adapter *adapter);
+ static void check_for_admin_com_state(struct ena_adapter *adapter);
+-static void ena_destroy_device(struct ena_adapter *adapter, bool graceful);
+-static int ena_restore_device(struct ena_adapter *adapter);
+ 
+ #ifdef ENA_XDP_SUPPORT
+ static void ena_init_io_rings(struct ena_adapter *adapter,
+@@ -117,8 +122,6 @@ static void ena_napi_disable_in_range(struct ena_adapter *adapter,
+ 				      int first_index, int count);
+ static void ena_napi_enable_in_range(struct ena_adapter *adapter,
+ 				     int first_index, int count);
+-static int ena_up(struct ena_adapter *adapter);
+-static void ena_down(struct ena_adapter *adapter);
+ static void ena_unmask_interrupt(struct ena_ring *tx_ring,
+ 				 struct ena_ring *rx_ring);
+ static void ena_update_ring_numa_node(struct ena_ring *tx_ring,
+@@ -2754,7 +2757,7 @@ err_setup_tx:
+ 	}
+ }
+ 
+-static int ena_up(struct ena_adapter *adapter)
++int ena_up(struct ena_adapter *adapter)
+ {
+ 	int io_queue_count, rc, i;
+ 
+@@ -2825,7 +2828,7 @@ err_req_irq:
+ 	return rc;
+ }
+ 
+-static void ena_down(struct ena_adapter *adapter)
++void ena_down(struct ena_adapter *adapter)
+ {
+ 	int io_queue_count = adapter->num_io_queues + adapter->xdp_num_queues;
+ 
+@@ -3874,7 +3877,7 @@ err_disable_msix:
+ 	return rc;
+ }
+ 
+-static void ena_destroy_device(struct ena_adapter *adapter, bool graceful)
++void ena_destroy_device(struct ena_adapter *adapter, bool graceful)
+ {
+ 	struct net_device *netdev = adapter->netdev;
+ 	struct ena_com_dev *ena_dev = adapter->ena_dev;
+@@ -3921,7 +3924,7 @@ static void ena_destroy_device(struct ena_adapter *adapter, bool graceful)
+ 	clear_bit(ENA_FLAG_DEVICE_RUNNING, &adapter->flags);
+ }
+ 
+-static int ena_restore_device(struct ena_adapter *adapter)
++int ena_restore_device(struct ena_adapter *adapter)
+ {
+ 	struct ena_com_dev_get_features_ctx get_feat_ctx;
+ 	struct ena_com_dev *ena_dev = adapter->ena_dev;
+diff --git a/ena/ena_netdev.h b/ena/ena_netdev.h
+index 025774a..4557751 100644
+--- a/ena/ena_netdev.h
++++ b/ena/ena_netdev.h
+@@ -51,6 +51,10 @@
+ #include "ena_com.h"
+ #include "ena_eth_com.h"
+ 
++#if IS_ENABLED(CONFIG_NETMAP)
++#include <ena_netmap_linux.h>
++#endif
++
+ #define DRV_MODULE_GEN_MAJOR	2
+ #define DRV_MODULE_GEN_MINOR	2
+ #define DRV_MODULE_GEN_SUBMINOR 7
+@@ -199,6 +203,14 @@ struct ena_calc_queue_size_ctx {
+ 	u16 max_rx_sgl_size;
+ };
+ 
++#if IS_ENABLED(CONFIG_NETMAP)
++struct ena_netmap_tx_info {
++	uint32_t socket_buf_idx[ENA_PKT_MAX_BUFS];
++	bus_dmamap_t map_seg[ENA_PKT_MAX_BUFS]; /* bus_dmamap_t = dma_addr_t bsd_glue.h takes care of it. */
++	unsigned int sockets_used;
++};
++#endif
++
+ struct ena_tx_buffer {
+ 	struct sk_buff *skb;
+ 	/* num of ena desc for this specific skb
+@@ -226,6 +238,11 @@ struct ena_tx_buffer {
+ 
+ 	/* Used for detect missing tx packets to limit the number of prints */
+ 	u32 print_once;
++
++#if IS_ENABLED(CONFIG_NETMAP)
++	struct ena_netmap_tx_info nm_info;
++#endif /* CONFIG_NETMAP */
++
+ 	/* Save the last jiffies to detect missing tx packets
+ 	 *
+ 	 * sets to non zero value on ena_start_xmit and set to zero on
+@@ -244,6 +261,9 @@ struct ena_rx_buffer {
+ 	struct page *page;
+ 	u32 page_offset;
+ 	struct ena_com_buf ena_buf;
++#if IS_ENABLED(CONFIG_NETMAP)
++	uint32_t netmap_buf_idx;
++#endif /* CONFIG_NETMAP */
+ } ____cacheline_aligned;
+ 
+ struct ena_stats_tx {
+@@ -347,6 +367,11 @@ struct ena_ring {
+ #if ENA_BUSY_POLL_SUPPORT
+ 	atomic_t bp_state;
+ #endif
++#if IS_ENABLED(CONFIG_NETMAP)
++	/* How many packets are sent in one Tx loop, used for doorbells */
++	uint32_t acum_pkts;
++	bool initialized;
++#endif
+ } ____cacheline_aligned;
+ 
+ #if ENA_BUSY_POLL_SUPPORT
+@@ -614,4 +639,11 @@ static inline enum ena_xdp_errors_t ena_xdp_allowed(struct ena_adapter *adapter)
+ }
+ #endif /* ENA_XDP_SUPPORT */
+ 
++// used by ena_netmap.c. netmap driver support needs to do certain operation's hence
++// we need these function's avaliable across driver.
++int ena_up(struct ena_adapter *adapter);
++void ena_down(struct ena_adapter *adapter);
++void ena_destroy_device(struct ena_adapter *adapter, bool graceful);
++int ena_restore_device(struct ena_adapter *adapter);
++
+ #endif /* !(ENA_H) */
