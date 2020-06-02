@@ -31,78 +31,8 @@
 #include <net/netmap.h>
 #include <netmap/netmap_kern.h>
 
-/* restore kernel and user view of transmit ring. */
-static int ena_netmap_txsync(struct netmap_kring *kring, int flags) {
-	return 0;
-}
-
-/* restore kernel and user view of receive ring. */
-static int ena_netmap_rxsync(struct netmap_kring *kring, int flags) {
-	return 0;
-}
+#ifndef ENA_NETMAP_LINUX_H
+#define ENA_NETMAP_LINUX_H
 
 
-/*
- * register/unregister with netmap. This function is called with netmap lock
- * also its only called on the first register or the last unregister.
- */
-static int ena_netmap_reg(struct netmap_adapter *na, int onoff) {
-	return 0;
-}
-
-/*
- * attach routine called from ena driver. This is the main routine which
- * set's up your netmap_attach() parameters.
- */
-static void ena_netmap_attach(struct ena_adapter *adapter)
-{
-	struct netmap_adapter na;
-
-	bzero(&na, sizeof(na));
-	na.na_flags = NAF_MOREFRAG;
-	na.ifp = adapter->ifp;
-	/* adapter can have multiple rx and tx ring so ideally it should be
-	 * adapter->rx/tx_ring[x]->ring_size but if you look at the driver
-	 * initialization code all are set to requested_rx/tx_ring_size.
-	 * todo : user can change the ring size using ethtool interface so we
-	 * 	  should hanlde this here. we need a way to update netmap with the
-	 * 	  new values. I need to see how netmap uses it, from my guess it
-	 * 	  will process descriptor ring's based on these values. So we have to
-	 * 	  update if user changes it by ethtool.
-	 * Also I need to see what is the ENA_XDP_SUPPORT. It get's enabled on kernel
-	 * version > 5.0. XDP has some different mechanism for queues looks like.
-	 */
-	na.num_tx_desc = adapter->requested_tx_ring_size;
-	na.num_rx_desc = adapter->requested_rx_ring_size;
-	/* again I don't know what this xdp is bug setting this values based on ena_open() function */
-	na.num_tx_rings = adapter->num_io_queues/* + adapter->xdp_num_queues*/;
-	na.num_rx_rings = adapter->num_io_queues/* + adapter->xdp_num_queues*/;
-	na.rx_buf_maxsize = 1500; // copied from ixgbe driver as per them its overwritten by nm_config
-
-	/* todo : I have to implement these function. */
-	na.nm_txsync = ena_netmap_txsync;
-	na.nm_rxsync = ena_netmap_rxsync;
-	na.nm_register = ena_netmap_reg;
-
-	/* should I implement this?? I don't think so but I might need nm_config implementation.
-	na.nm_krings_create = ena_netmap_krings_create;
-	na.nm_krings_delete = ena_netmap_krings_delete;
-	na.nm_intr = ena_netmap_intr;
-	na.nm_config = ena_netmap_config;
-	*/
-
-	/* as of now I don't see any need ena driver specific adapter info. so just calling regular
-	 *  netmap_attach() to initialize netmap_hw_adapter structure.
-	 * if (netmap_attach_ext(&na, sizeof(struct netmap_ena_adapter), 1)) {
-	 */
-	if (netmap_attach(&na) {
-		pr_err("netmap: failed to attach netmap adapter");
-		return;
-	}
-
-}
-
-static void ena_netmap_detach(struct ena_adapter *adapter)
-{
-	netmap_detach(adapter->netdev);
-}
+#endif

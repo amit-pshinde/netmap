@@ -1,0 +1,31 @@
+diff --git a/ena/Makefile b/ena/Makefile
+index b74e81a..10d4702 100644
+--- a/ena/Makefile
++++ b/ena/Makefile
+@@ -10,7 +10,7 @@ ena-objs := ena_netdev.o \
+ 
+ ena-$(CONFIG_SYSFS) += ena_sysfs.o
+ 
+-ccflags-y := -I$(src)
++ccflags-y := -I$(src) $(CFLAGS_EXTRA)
+ ccflags-y += -I$(src)/$(ENA_COM_PATH)/
+ 
+ 
+diff --git a/ena/ena_netdev.c b/ena/ena_netdev.c
+index 561842a..b2804d2 100644
+--- a/ena/ena_netdev.c
++++ b/ena/ena_netdev.c
+@@ -56,6 +56,13 @@
+ #include "ena_pci_id_tbl.h"
+ #include "ena_sysfs.h"
+ 
++#ifdef CONFIG_NETMAP
++// glue to include netmap driver specific header file. since the netmap driver was originally
++// implemented for freebsd you need bsd_glue.h to to included in any file that call's netmap
++// specific code.
++#include <ena_netmap_linux.h>
++#endif
++
+ static char version[] = DEVICE_NAME " v" DRV_MODULE_GENERATION "\n";
+ 
+ MODULE_AUTHOR("Amazon.com, Inc. or its affiliates");
