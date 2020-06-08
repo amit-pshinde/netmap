@@ -12,7 +12,7 @@ index b74e81a..10d4702 100644
  
  
 diff --git a/ena/ena_netdev.c b/ena/ena_netdev.c
-index 561842a..b608166 100644
+index 561842a..7d80cff 100644
 --- a/ena/ena_netdev.c
 +++ b/ena/ena_netdev.c
 @@ -56,6 +56,13 @@
@@ -47,7 +47,50 @@ index 561842a..b608166 100644
  static void ena_unmask_interrupt(struct ena_ring *tx_ring,
  				 struct ena_ring *rx_ring);
  static void ena_update_ring_numa_node(struct ena_ring *tx_ring,
-@@ -2754,7 +2757,7 @@ err_setup_tx:
+@@ -1316,6 +1319,18 @@ static int ena_clean_tx_irq(struct ena_ring *tx_ring, u32 budget)
+ 	int tx_pkts = 0;
+ 	int rc;
+ 
++#if IS_ENABLED(CONFIG_NETMAP)
++	// netmap mode all work is done in client thread nothing is done below.
++	// napi only wakes up these threads who might be waiting on queues.
++	struct ena_adapter *adapter = tx_ring->adapter;
++	if (netmap_tx_irq(adapter->netdev, tx_ring->qid) != NM_IRQ_PASS) {
++		// should I return 0. this mean's I have consumed all my budget
++		// and napi won't reschedule me immediately or should I return budget based
++		// on resched check.
++		return 0;
++	}
++#endif
++
+ 	next_to_clean = tx_ring->next_to_clean;
+ 	txq = netdev_get_tx_queue(tx_ring->netdev, tx_ring->qid);
+ 
+@@ -1692,6 +1707,9 @@ static int ena_clean_rx_irq(struct ena_ring *rx_ring, struct napi_struct *napi,
+ #endif /* ENA_XDP_SUPPORT */
+ 	int rc = 0;
+ 	int i;
++#if IS_ENABLED(CONFIG_NETMAP)
++	int dummy, nm_irq;
++#endif
+ 
+ 	netif_dbg(rx_ring->adapter, rx_status, rx_ring->netdev,
+ 		  "%s qid %d\n", __func__, rx_ring->qid);
+@@ -1700,6 +1718,13 @@ static int ena_clean_rx_irq(struct ena_ring *rx_ring, struct napi_struct *napi,
+ 	xdp.rxq = &rx_ring->xdp_rxq;
+ #endif /* ENA_XDP_SUPPORT */
+ 
++#if IS_ENABLED(CONFIG_NETMAP)
++	nm_irq = netmap_rx_irq(rx_ring->netdev, rx_ring->qid, &dummy);
++	if (nm_irq != NM_IRQ_PASS)
++		return 0; // need to check if I need to check resched.
++		// return (nm_irq == NM_IRQ_RESCHED) ? budget : 1;
++#endif
++
+ 	do {
+ #ifdef ENA_XDP_SUPPORT
+ 		xdp_verdict = XDP_PASS;
+@@ -2754,7 +2779,7 @@ err_setup_tx:
  	}
  }
  
@@ -56,7 +99,7 @@ index 561842a..b608166 100644
  {
  	int io_queue_count, rc, i;
  
-@@ -2825,7 +2828,7 @@ err_req_irq:
+@@ -2825,7 +2850,7 @@ err_req_irq:
  	return rc;
  }
  
@@ -65,7 +108,7 @@ index 561842a..b608166 100644
  {
  	int io_queue_count = adapter->num_io_queues + adapter->xdp_num_queues;
  
-@@ -3874,7 +3877,7 @@ err_disable_msix:
+@@ -3874,7 +3899,7 @@ err_disable_msix:
  	return rc;
  }
  
@@ -74,7 +117,7 @@ index 561842a..b608166 100644
  {
  	struct net_device *netdev = adapter->netdev;
  	struct ena_com_dev *ena_dev = adapter->ena_dev;
-@@ -3921,7 +3924,7 @@ static void ena_destroy_device(struct ena_adapter *adapter, bool graceful)
+@@ -3921,7 +3946,7 @@ static void ena_destroy_device(struct ena_adapter *adapter, bool graceful)
  	clear_bit(ENA_FLAG_DEVICE_RUNNING, &adapter->flags);
  }
  
@@ -84,7 +127,7 @@ index 561842a..b608166 100644
  	struct ena_com_dev_get_features_ctx get_feat_ctx;
  	struct ena_com_dev *ena_dev = adapter->ena_dev;
 diff --git a/ena/ena_netdev.h b/ena/ena_netdev.h
-index 025774a..4557751 100644
+index 025774a..e4f2f30 100644
 --- a/ena/ena_netdev.h
 +++ b/ena/ena_netdev.h
 @@ -51,6 +51,10 @@
@@ -92,7 +135,7 @@ index 025774a..4557751 100644
  #include "ena_eth_com.h"
  
 +#if IS_ENABLED(CONFIG_NETMAP)
-+#include <ena_netmap_linux.h>
++#include <bsd_glue.h>
 +#endif
 +
  #define DRV_MODULE_GEN_MAJOR	2
@@ -159,3 +202,61 @@ index 025774a..4557751 100644
 +int ena_restore_device(struct ena_adapter *adapter);
 +
  #endif /* !(ENA_H) */
+diff --git a/ena/ena_netmap_linux.h b/ena/ena_netmap_linux.h
+new file mode 100644
+index 0000000..9d971a2
+--- /dev/null
++++ b/ena/ena_netmap_linux.h
+@@ -0,0 +1,52 @@
++/*
++ * Copyright (C) 2020 Amit Shinde. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ */
++
++/*
++ * netmap support for: ena (linux version)
++ */
++
++#include <bsd_glue.h>
++#include <net/netmap.h>
++#include <netmap/netmap_kern.h>
++#include <ena_netdev.h>
++
++#ifndef ENA_NETMAP_LINUX_H
++#define ENA_NETMAP_LINUX_H
++
++/*
++ * attach routine called from ena driver. This is the main routine which
++ * set's up your netmap_attach() parameters.
++ */
++int ena_netmap_attach(struct ena_adapter *);
++
++int ena_netmap_alloc_rx_slot(struct ena_adapter *, struct ena_ring *, struct ena_rx_buffer *);
++void ena_netmap_free_rx_slot(struct ena_adapter *, struct ena_ring *, struct ena_rx_buffer *);
++bool ena_rx_ring_in_netmap(struct ena_adapter *, int);
++bool ena_tx_ring_in_netmap(struct ena_adapter *, int);
++void ena_netmap_reset_rx_ring(struct ena_adapter *, int);
++void ena_netmap_reset_tx_ring(struct ena_adapter *, int);
++void ena_netmap_unload(struct ena_adapter *, bus_dmamap_t);
++
++#endif
