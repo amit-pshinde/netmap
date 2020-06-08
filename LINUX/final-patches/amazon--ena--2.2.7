@@ -1,8 +1,14 @@
 diff --git a/ena/Makefile b/ena/Makefile
-index b74e81a..10d4702 100644
+index b74e81a..2ccc594 100644
 --- a/ena/Makefile
 +++ b/ena/Makefile
-@@ -10,7 +10,7 @@ ena-objs := ena_netdev.o \
+@@ -5,12 +5,13 @@ ena-objs := ena_netdev.o \
+ 		ena_ethtool.o \
+ 		dim.o \
+ 		net_dim.o \
++		ena_netmap_linux.o \
+ 		$(ENA_COM_PATH)/ena_com.o \
+ 		$(ENA_COM_PATH)/ena_eth_com.o
  
  ena-$(CONFIG_SYSFS) += ena_sysfs.o
  
@@ -202,9 +208,235 @@ index 025774a..e4f2f30 100644
 +int ena_restore_device(struct ena_adapter *adapter);
 +
  #endif /* !(ENA_H) */
+diff --git a/ena/ena_netmap_linux.c b/ena/ena_netmap_linux.c
+new file mode 100644
+index 0000000..1d4be99
+--- /dev/null
++++ b/ena/ena_netmap_linux.c
+@@ -0,0 +1,220 @@
++// ena linux driver for netmap.
++#if IS_ENABLED(CONFIG_NETMAP)
++
++#include "ena_netdev.h"
++#include "ena_netmap_linux.h"
++
++struct ena_netmap_ctx {
++	struct netmap_kring *kring;
++	struct ena_adapter *adapter;
++	struct netmap_adapter *na;
++	struct netmap_slot *slots;
++	struct ena_ring *ring;
++	struct ena_com_io_cq *io_cq;
++	struct ena_com_io_sq *io_sq;
++	u_int nm_i;
++	uint16_t nt;
++	uint16_t lim;
++};
++
++// ---- ena specific helper functions for netmap api's ----
++static inline void
++ena_netmap_fill_ctx(struct netmap_kring *kring, struct ena_netmap_ctx *ctx, uint16_t ena_qid)
++{
++	ctx->kring = kring;
++	ctx->na = kring->na;
++	ctx->adapter = netdev_priv(ctx->na->ifp);
++	ctx->lim = kring->nkr_num_slots - 1;
++	ctx->io_cq = &ctx->adapter->ena_dev->io_cq_queues[ena_qid];
++	ctx->io_sq = &ctx->adapter->ena_dev->io_sq_queues[ena_qid];
++	ctx->slots = kring->ring->slot;
++}
++
++static inline void
++ena_netmap_rx_cleanup(struct ena_netmap_ctx *ctx)
++{
++}
++
++static inline int
++ena_netmap_rx_frames(struct ena_netmap_ctx *ctx)
++{
++	return 0;
++}
++
++static inline void
++ena_netmap_tx_cleanup(struct ena_netmap_ctx *ctx)
++{
++}
++
++static int
++ena_netmap_tx_frames(struct ena_netmap_ctx *ctx)
++{
++	return 0;
++}
++// ---- generic netmap api's from driver ----
++/* netmap register/unregister this function is already called with netmap lock
++ * during early register and when we unregister.
++ */
++static int
++ena_netmap_reg(struct netmap_adapter *na, int onoff)
++{
++	struct net_device *dev = na->ifp;
++	struct ena_adapter* adapter = netdev_priv(dev);
++	struct netmap_kring *kring;
++	enum txrx t;
++	int rc, i;
++
++	clear_bit(ENA_FLAG_TRIGGER_RESET, &adapter->flags);
++	ena_down(adapter);
++
++	if (onoff) {
++		for_rx_tx(t) {
++			for (i = 0; i <= nma_get_nrings(na, t); i++) {
++				kring = NMR(na, t)[i];
++				if (nm_kring_pending_on(kring)) {
++					kring->nr_mode = NKR_NETMAP_ON;
++				}
++			}
++		}
++		nm_set_native_flags(na);
++	} else {
++		nm_clear_native_flags(na);
++		for_rx_tx(t) {
++			for (i = 0; i <= nma_get_nrings(na, t); i++) {
++				kring = NMR(na, t)[i];
++				if (nm_kring_pending_off(kring)) {
++					kring->nr_mode = NKR_NETMAP_OFF;
++				}
++			}
++		}
++	}
++
++	rc = ena_up(adapter);
++	if (rc != 0) {
++		pr_err("ena_up failed with rc=%d\n", rc);
++		adapter->reset_reason = ENA_REGS_RESET_DRIVER_INVALID_STATE;
++		nm_clear_native_flags(na);
++		ena_destroy_device(adapter, false);
++		adapter->dev_up_before_reset = true;
++		rc = ena_restore_device(adapter);
++	}
++
++	return rc;
++}
++
++/* restore kernel and user view of receive ring. */
++static int
++ena_netmap_rxsync(struct netmap_kring *kring, int flags)
++{
++	struct ena_netmap_ctx ctx;
++	int rc;
++
++	ena_netmap_fill_ctx(kring, &ctx, ENA_IO_RXQ_IDX(kring->ring_id));
++	ctx.ring = &ctx.adapter->rx_ring[kring->ring_id];
++
++	if (ctx.kring->rhead > ctx.lim) {
++		/* Probably not needed to release slots from RX ring. */
++		return (netmap_ring_reinit(ctx.kring));
++	}
++
++        if (!netif_running(ctx.adapter->netdev))
++                return 0;
++
++	if (test_bit(ENA_FLAG_LINK_UP, &ctx.adapter->flags))
++		return 0;
++
++	if ((rc = ena_netmap_rx_frames(&ctx)) != 0)
++		return rc;
++
++	ena_netmap_rx_cleanup(&ctx);
++
++	return (0);
++}
++
++/* restore kernel and user view of transmit ring. */
++static int
++ena_netmap_txsync(struct netmap_kring *kring, int flags)
++{
++	struct ena_netmap_ctx ctx;
++	struct ena_adapter *adapter;
++	int rc = 0;
++
++	ena_netmap_fill_ctx(kring, &ctx, ENA_IO_TXQ_IDX(kring->ring_id));
++
++	ctx.ring = &ctx.adapter->tx_ring[kring->ring_id];
++	adapter = ctx.adapter;
++
++	// todo : do I need a mutex lock? I don't think so this code is already called with lock
++	// just keeping it in case we need to add one.
++
++	if (unlikely(!test_bit(ENA_FLAG_DEV_UP, &adapter->flags)))
++		goto txsync_end;
++
++	if (unlikely(!test_bit(ENA_FLAG_LINK_UP, &adapter->flags)))
++		goto txsync_end;
++
++	rc = ena_netmap_tx_frames(&ctx);
++	ena_netmap_tx_cleanup(&ctx);
++
++txsync_end:
++	return (rc);
++}
++
++/*
++ * attach routine called from ena driver. This is the main routine which
++ * set's up your netmap_attach() parameters.
++ */
++void ena_netmap_attach(struct ena_adapter *adapter)
++{
++	struct netmap_adapter na;
++
++	bzero(&na, sizeof(na));
++	na.na_flags = NAF_MOREFRAG;
++	na.ifp = adapter->netdev;
++	/* adapter can have multiple rx and tx ring so ideally it should be
++	 * adapter->rx/tx_ring[x]->ring_size but if you look at the driver
++	 * initialization code all are set to requested_rx/tx_ring_size.
++	 * todo : user can change the ring size using ethtool interface so we
++	 * 	  should hanlde this here. we need a way to update netmap with the
++	 * 	  new values. I need to see how netmap uses it, from my guess it
++	 * 	  will process descriptor ring's based on these values. So we have to
++	 * 	  update if user changes it by ethtool.
++	 * Also I need to see what is the ENA_XDP_SUPPORT. It get's enabled on kernel
++	 * version > 5.0. XDP has some different mechanism for queues looks like.
++	 */
++	na.num_tx_desc = adapter->requested_tx_ring_size;
++	na.num_rx_desc = adapter->requested_rx_ring_size;
++	/* again I don't know what this xdp is but setting this values based on ena_open() function */
++	na.num_tx_rings = adapter->num_io_queues/* + adapter->xdp_num_queues*/;
++	na.num_rx_rings = adapter->num_io_queues/* + adapter->xdp_num_queues*/;
++	na.rx_buf_maxsize = 1500; // fixed value for now I think ena used 4k but this can be overwritten by nm_config
++
++	/* todo : I have to implement these function. */
++	na.nm_txsync = ena_netmap_txsync;
++	na.nm_rxsync = ena_netmap_rxsync;
++	na.nm_register = ena_netmap_reg;
++
++	/* should I implement this?? I don't think so but I might need nm_config implementation.
++	na.nm_krings_create = ena_netmap_krings_create;
++	na.nm_krings_delete = ena_netmap_krings_delete;
++	na.nm_intr = ena_netmap_intr;
++	na.nm_config = ena_netmap_config;
++	*/
++
++	/* as of now I don't see any need for ena driver specific adapter info. so just calling regular
++	 *  netmap_attach() to initialize netmap_hw_adapter structure.
++	 * if (netmap_attach_ext(&na, sizeof(struct netmap_ena_adapter), 1)) {
++	 *	pr_err("netmap: failed to attach netmap adapter");
++	 *	return;
++	 * }
++	 */
++	if (netmap_attach(&na)) {
++		pr_err("netmap: failed to attach netmap adapter");
++		return;
++	}
++
++	return;
++
++}
++
++#endif // CONFIG_NETMAP
 diff --git a/ena/ena_netmap_linux.h b/ena/ena_netmap_linux.h
 new file mode 100644
-index 0000000..9d971a2
+index 0000000..b160d71
 --- /dev/null
 +++ b/ena/ena_netmap_linux.h
 @@ -0,0 +1,52 @@
@@ -249,7 +481,7 @@ index 0000000..9d971a2
 + * attach routine called from ena driver. This is the main routine which
 + * set's up your netmap_attach() parameters.
 + */
-+int ena_netmap_attach(struct ena_adapter *);
++void ena_netmap_attach(struct ena_adapter *);
 +
 +int ena_netmap_alloc_rx_slot(struct ena_adapter *, struct ena_ring *, struct ena_rx_buffer *);
 +void ena_netmap_free_rx_slot(struct ena_adapter *, struct ena_ring *, struct ena_rx_buffer *);
